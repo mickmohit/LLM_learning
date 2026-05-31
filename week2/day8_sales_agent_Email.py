@@ -88,6 +88,30 @@ sales_agent_1 = Agent(
     model="llama-3.1-8b-instant"
 )
 
+instructions2 = (
+    "You are a sales agent working for ComplAI, a company that provides a "
+    "SaaS tool for ensuring SOC2 compliance and preparing for audits, "
+    "powered by AI. You write friendly, conversational cold emails."
+)
+
+sales_agent_2 = Agent(
+    name="Friendly Sales Agent", 
+    instructions=instructions2,
+    model="llama-3.1-8b-instant"
+)
+
+instructions3 = (
+    "You are a sales agent working for ComplAI, a company that provides a "
+    "SaaS tool for ensuring SOC2 compliance and preparing for audits, "
+    "powered by AI. You write concise, direct cold emails."
+)
+
+sales_agent_3 = Agent(
+    name="Concise Sales Agent", 
+    instructions=instructions3,
+    model="llama-3.1-8b-instant"
+)
+
 async def sales_main(input_text: str = "Write a cold email to a potential client"):
     if tracer:
         with tracer.start_as_current_span("sales_agent_run") as span:
@@ -110,15 +134,76 @@ async def sales_main(input_text: str = "Write a cold email to a potential client
             
             # Flush the completed buffer string to output.value column fields
             span.set_attribute("output.value", full_output_response)
-    else:
-        # Fallback if tracer fails to boot
-        result = Runner.run_streamed(sales_agent_1, input=input_text)
-        async for event in result.stream_events():
-            if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
-                print(event.data.delta, end="", flush=True)
+    
+
+async def run_parallel_agents(message: str = "Write a cold sales email to a potential client"):
+    if tracer:
+        with tracer.start_as_current_span("Parallel Sales Agent") as span:
+            span.set_attribute("openinference.span.kind", "CHAIN")
+            span.set_attribute("input.value", message)
+            
+            results = await asyncio.gather(
+                Runner.run(sales_agent_1, input=message),
+                Runner.run(sales_agent_2, input=message),
+                Runner.run(sales_agent_3, input=message)
+            )
+            
+            outputs = [result.final_output for result in results]
+            span.set_attribute("output.value", str(outputs))
+  
+    for output in outputs:
+        print(output)
+    
+    return outputs
+
+instructions4 = "You pick the best cold email from given options. \
+    Imagine you are customer and pick the one you most likely to respond to. \
+    Reply with the selected email only. Do not give an explanation."
+
+sales_picker = Agent(
+     name="sales_picker", 
+    instructions=instructions4,
+    model="llama-3.1-8b-instant"
+)
+
+async def run_parallel_agents_with_picker(message: str = "Write a cold sales email to a potential client"):
+    if tracer:
+        with tracer.start_as_current_span("Parallel Sales Agent With Sales Picker") as span:
+            span.set_attribute("openinference.span.kind", "CHAIN")
+            span.set_attribute("input.value", message)
+            
+            results = await asyncio.gather(
+                Runner.run(sales_agent_1, input=message),
+                Runner.run(sales_agent_2, input=message),
+                Runner.run(sales_agent_3, input=message)
+            )
+            
+            # Track outputs with their agent names
+            agents = [sales_agent_1, sales_agent_2, sales_agent_3]
+            outputs = [result.final_output for result in results]
+            agent_outputs = list(zip(agents, outputs))
+            
+            emails = "Cold Sales Emails: \n\n".join(outputs)
+            best = await Runner.run(sales_picker, input=emails)
+            span.set_attribute("output.value", str(outputs))
+  
+            # Find which agent produced the best email by matching content
+            best_output = best.final_output
+            best_agent = "Unknown"
+            
+            for agent, output in agent_outputs:
+                if output.strip() == best_output.strip() or best_output.strip() in output.strip():
+                    best_agent = agent.name
+                    break
+            
+            print(f"Best Agent: {best_agent}")
+            print(f"Best Sales email: \n{best_output}")
+    
+    return best.final_output
+
 
 if __name__ == "__main__":
-    asyncio.run(sales_main())
+    asyncio.run(run_parallel_agents_with_picker())
     
     # Force the local exporter engine to dispatch data before the script exits
     if tracer_provider:
